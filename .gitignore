@@ -1,0 +1,86 @@
+# =========================
+# 환경 변수 / 시크릿
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+wheels/
+*.manifest
+*.spec
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.coveragerc
+
+# mypy / ruff / pyright
+.mypy_cache/
+.ruff_cache/
+pyrightconfig.json
+
+# =========================
+# uv / pip
+# =========================
+
+pip-wheel-metadata/
+
+# =========================
+# Alembic
+# =========================
+# 버전 파일은 커밋, 로컬 캐시만 제외
+alembic/__pycache__/
+
+# =========================
+# Docker
+# =========================
+# 볼륨 데이터는 로컬에만 존재
+mysql_data/
+redis_data/
+
+# =========================
+# IDE / 에디터
+# =========================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# =========================
+# 로그 / 임시 파일
+# =========================
+*.log
+logs/
+tmp/
+temp/
+
+# =========================
+# ML 모델 바이너리 (별도 전달)
+# =========================
+app/ml/models/*.zip
+app/ml/models/*.pth
+app/ml/models/data/
