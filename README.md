@@ -134,13 +134,41 @@ curl http://localhost:8000/health/models
     "zone": 14,
     "action": 183,
     "batter_cluster": 2,
-    "confidence": 0.82
+    "confidence": 0.38
+  },
+  "pitcher_stats": {
+    "era": 3.45,
+    "whip": 1.12,
+    "k9": 10.8,
+    "ip_season": 52.3,
+    "pitches_today": 67,
+    "pitch_mix": [
+      { "pitch_type": "Four-Seam Fastball", "count": 28, "share": 0.42, "avg_velocity": 97.1 },
+      { "pitch_type": "Slider", "count": 22, "share": 0.33, "avg_velocity": 87.4 }
+    ],
+    "velocity_trend": [97.2, 96.8, 97.5, 96.1, 95.8],
+    "current_velocity": 95.8,
+    "peak_velocity": 98.2,
+    "inning_pitches": [
+      { "inning": 1, "count": 18 },
+      { "inning": 2, "count": 14 }
+    ],
+    "change_index": 42.5
+  },
+  "batter_stats": {
+    "avg": 0.287,
+    "ops": 0.875,
+    "hr": 8,
+    "rbi": 25
   }
 }
 ```
 
 - `pitch_sequence`: 현재 타석의 전체 투구 이력 (오래된 순)
 - `last_pitch`: `pitch_sequence`의 마지막 요소와 동일
+- `prediction.confidence`: 선택 액션 확률 / 상위 3개 액션 확률 합 (상위 후보 내 상대 신뢰도)
+- `pitcher_stats`: 시즌 스탯(MLB Stats API) + 게임 내 누적 통계(실시간 계산)
+- `batter_stats`: 시즌 스탯(MLB Stats API)
 - WebSocket 연결 직후 Redis 캐시에서 최신 상태를 즉시 전송 (빈 화면 방지)
 
 ---
@@ -165,10 +193,70 @@ curl http://localhost:8000/health/models
 
 | 출처 | 용도 |
 |------|------|
-| `http://localhost:5173` | Vite 개발 서버 |
+| `http://localhost:5173` | Vite 개발 서버 (기본 포트) |
+| `http://localhost:5174` | Vite 개발 서버 (5173 충돌 시 대체 포트) |
 | `http://localhost:3000` | Next.js / CRA 개발 서버 |
 
 프로덕션 배포 시 `main.py`의 `allow_origins` 목록을 실제 도메인으로 교체하세요.
+
+---
+
+## 프론트엔드 통합 실행
+
+`docker-compose.yml`에 프론트엔드 서비스가 포함되어 있어 **Docker Desktop만 있으면** 백엔드·프론트엔드를 한 번에 실행할 수 있습니다.
+
+```bash
+# baseball-back/ 에서 실행
+docker compose up --build
+```
+
+| 컨테이너 | 포트 | 설명 |
+|----------|------|------|
+| `smartpitch-api` | 8000 | FastAPI 백엔드 |
+| `smartpitch-frontend` | 5173 | React 앱 (nginx) |
+| `smartpitch-db` | 3306 | MySQL |
+| `smartpitch-redis` | 6379 | Redis |
+
+빌드 후 `http://localhost:5173` 접속, 아래 명령으로 리플레이 시작:
+
+```bash
+curl -X POST http://localhost:8000/api/replay/start \
+  -H "Content-Type: application/json" \
+  -d '{"game_pk": 825106, "interval": 4.0}'
+```
+
+> 프론트엔드 소스는 `../baseball-front/frontend`에서 빌드됩니다. 두 레포가 같은 상위 디렉터리에 있어야 합니다.
+
+---
+
+## 주요 변경 이력
+
+### 2026-04-27
+
+**`app/services/replay.py` — 리플레이 강화**
+- MLB Stats API에서 투수·타자 시즌 스탯(ERA/WHIP/K9/IP, AVG/OPS/HR/RBI) 경기 시작 전 일괄 조회
+- `_PitcherTracker`: 리플레이 진행 중 투수별 구종 믹스·구속 추이·이닝별 투구 수 실시간 누적
+- `change_index` 실시간 계산 (투구 수 + 구속 낙폭 기반)
+- 예외 발생 시 silent fail 대신 ERROR 로그 출력으로 수정
+
+**`app/schemas/pitch.py` — 신규 스키마**
+- `PitcherLiveStats`: 시즌 스탯 + 게임 내 누적 통계를 하나의 모델로 통합
+- `HitterLiveStats`: 타자 시즌 스탯
+- `PitchMixEntry`, `InningPitchCount` 서브 모델 추가
+- `GameStateMessage`에 `pitcher_stats`, `batter_stats` 필드 추가
+
+**`app/ml/inference.py` — confidence 계산 개선**
+- 기존: 전체 액션(최대 39개) softmax → 균등분포 수렴으로 항상 2~3% 표시
+- 변경: 선택 액션 확률 / 상위 3개 액션 확률 합 → 30~70%대의 의미있는 신뢰도
+
+**`.env` — Redis URL 수정**
+- `redis://localhost:6379` → `redis://cache:6379` (Docker 컨테이너 간 통신)
+
+**`docker-compose.yml` — 프론트엔드 서비스 추가**
+- `smartpitch-frontend` 컨테이너 추가 (nginx, 포트 5173)
+
+**`app/main.py` — CORS**
+- `http://localhost:5174` 추가 (Vite 포트 충돌 시 대체 포트 대응)
 
 ---
 
