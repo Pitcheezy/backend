@@ -19,4 +19,5 @@ def run_prediction(req: PredictRequest) -> PredictResponse:
         zone=result["zone"],
         action=result["action"],
         batter_cluster=result["batter_cluster"],
+        confidence=result["confidence"],
     )

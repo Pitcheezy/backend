@@ -5,7 +5,6 @@ clients receive real-time updates.
 """
 
 import asyncio
-import json
 import logging
 from datetime import date
 
@@ -14,26 +13,104 @@ import redis.asyncio as aioredis
 
 from app.config import settings
 from app.ml.inference import predict as ml_predict
-from app.ml.loader import PITCHER_PITCHES, loaded_models
-from app.schemas.pitch import GameStateMessage, PredictResponse
+from app.ml.loader import PITCHER_ID_MAP, loaded_models
+from app.schemas.pitch import (
+    GameStateMessage,
+    InningLine,
+    LastPitch,
+    PredictResponse,
+    TeamInfo,
+)
 
 logger = logging.getLogger(__name__)
 
 MLB_BASE = "https://statsapi.mlb.com/api/v1"
 
 
-def _resolve_pitcher_key(pitcher_id: int | None, pitcher_name: str | None) -> str | None:
-    """Best-effort mapping from MLB pitcher info to a loaded model key."""
-    if pitcher_name is None:
-        return None
-    name_lower = pitcher_name.lower()
-    for key in loaded_models:
-        if key in name_lower:
-            return key
+# ---------------------------------------------------------------------------
+# 투수 키 해석
+# ---------------------------------------------------------------------------
+
+def resolve_pitcher_key(pitcher_id: int | None, pitcher_name: str | None) -> str | None:
+    """pitcher_id 우선, 없으면 이름 포함 여부로 fallback."""
+    if pitcher_id and pitcher_id in PITCHER_ID_MAP:
+        key = PITCHER_ID_MAP[pitcher_id]
+        return key if key in loaded_models else None
+    if pitcher_name:
+        for key in loaded_models:
+            if key in pitcher_name.lower():
+                return key
     return None
 
 
-async def _get_live_games(client: httpx.AsyncClient) -> list[dict]:
+# ---------------------------------------------------------------------------
+# 데이터 파싱 헬퍼
+# ---------------------------------------------------------------------------
+
+def _parse_team(team_data: dict) -> TeamInfo:
+    return TeamInfo(
+        id=team_data.get("id", 0),
+        name=team_data.get("name", ""),
+        code=team_data.get("abbreviation", ""),
+    )
+
+
+def _parse_inning_line(innings: list[dict]) -> InningLine:
+    away: list[int | None] = []
+    home: list[int | None] = []
+    for inn in innings:
+        away.append(inn.get("away", {}).get("runs"))
+        home.append(inn.get("home", {}).get("runs"))
+    return InningLine(away=away, home=home)
+
+
+def _parse_last_pitch(play_events: list[dict]) -> LastPitch | None:
+    pitch_events = [e for e in play_events if e.get("isPitch")]
+    if not pitch_events:
+        return None
+    last = pitch_events[-1]
+    details = last.get("details", {})
+    pitch_data = last.get("pitchData", {})
+    return LastPitch(
+        pitch_type=details.get("type", {}).get("description"),
+        zone=pitch_data.get("zone"),
+        velocity=pitch_data.get("startSpeed"),
+        result=details.get("call", {}).get("description"),
+    )
+
+
+def _make_prediction(
+    pitcher_key: str, pitch: dict, batter_id: int
+) -> PredictResponse | None:
+    try:
+        result = ml_predict(
+            pitcher_key=pitcher_key,
+            balls=min(pitch["balls"], 3),
+            strikes=min(pitch["strikes"], 2),
+            outs=min(pitch["outs"], 2),
+            on_1b=pitch["on_1b"],
+            on_2b=pitch["on_2b"],
+            on_3b=pitch["on_3b"],
+            batter_id=batter_id,
+        )
+        return PredictResponse(
+            pitcher_key=pitcher_key,
+            pitch_type=result["pitch_type"],
+            zone=result["zone"],
+            action=result["action"],
+            batter_cluster=result["batter_cluster"],
+            confidence=result["confidence"],
+        )
+    except Exception:
+        logger.exception("예측 실패: pitcher_key=%s", pitcher_key)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 경기 목록 조회
+# ---------------------------------------------------------------------------
+
+async def get_live_games(client: httpx.AsyncClient) -> list[dict]:
     today = date.today().strftime("%Y-%m-%d")
     resp = await client.get(
         f"{MLB_BASE}/schedule",
@@ -49,6 +126,10 @@ async def _get_live_games(client: httpx.AsyncClient) -> list[dict]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# 경기 폴링
+# ---------------------------------------------------------------------------
+
 async def _poll_game(
     game_pk: int, client: httpx.AsyncClient, redis_client: aioredis.Redis
 ) -> None:
@@ -58,15 +139,20 @@ async def _poll_game(
     resp.raise_for_status()
     data = resp.json()
 
+    game_data = data.get("gameData", {})
     live_data = data.get("liveData", {})
+    linescore = live_data.get("linescore", {})
     current_play = live_data.get("plays", {}).get("currentPlay", {})
+
     if not current_play:
         return
 
     about = current_play.get("about", {})
     matchup = current_play.get("matchup", {})
     count = current_play.get("count", {})
-    offense = live_data.get("linescore", {}).get("offense", {})
+    offense = linescore.get("offense", {})
+    teams_score = linescore.get("teams", {})
+    innings = linescore.get("innings", [])
 
     batter_id: int | None = matchup.get("batter", {}).get("id")
     pitcher_id: int | None = matchup.get("pitcher", {}).get("id")
@@ -78,49 +164,55 @@ async def _poll_game(
     on_2b = "second" in offense
     on_3b = "third" in offense
 
+    pitcher_key = resolve_pitcher_key(pitcher_id, pitcher_name)
     prediction: PredictResponse | None = None
-    pitcher_key = _resolve_pitcher_key(pitcher_id, pitcher_name)
     if pitcher_key and batter_id is not None:
-        try:
-            result = ml_predict(
-                pitcher_key=pitcher_key,
-                balls=min(balls, 3),
-                strikes=min(strikes, 2),
-                outs=min(outs, 2),
-                on_1b=on_1b,
-                on_2b=on_2b,
-                on_3b=on_3b,
-                batter_id=batter_id,
-            )
-            prediction = PredictResponse(
-                pitcher_key=pitcher_key,
-                pitch_type=result["pitch_type"],
-                zone=result["zone"],
-                action=result["action"],
-                batter_cluster=result["batter_cluster"],
-            )
-        except Exception:
-            logger.exception("Prediction failed for game %d", game_pk)
+        prediction = _make_prediction(
+            pitcher_key,
+            {"balls": balls, "strikes": strikes, "outs": outs,
+             "on_1b": on_1b, "on_2b": on_2b, "on_3b": on_3b},
+            batter_id,
+        )
+
+    # 팀 정보
+    away_team: TeamInfo | None = None
+    home_team: TeamInfo | None = None
+    gd_teams = game_data.get("teams", {})
+    if gd_teams.get("away"):
+        away_team = _parse_team(gd_teams["away"])
+    if gd_teams.get("home"):
+        home_team = _parse_team(gd_teams["home"])
 
     state = GameStateMessage(
         game_pk=game_pk,
         inning=about.get("inning"),
-        inning_half=about.get("halfInning"),
+        half=about.get("halfInning"),
+        away_score=teams_score.get("away", {}).get("runs"),
+        home_score=teams_score.get("home", {}).get("runs"),
+        away_team=away_team,
+        home_team=home_team,
+        inning_line=_parse_inning_line(innings) if innings else None,
         batter_id=batter_id,
         batter_name=matchup.get("batter", {}).get("fullName"),
         pitcher_id=pitcher_id,
         pitcher_name=pitcher_name,
+        pitcher_key=pitcher_key,
         balls=balls,
         strikes=strikes,
         outs=outs,
         on_1b=on_1b,
         on_2b=on_2b,
         on_3b=on_3b,
+        last_pitch=_parse_last_pitch(current_play.get("playEvents", [])),
         prediction=prediction,
     )
 
     await redis_client.publish(f"game:{game_pk}", state.model_dump_json())
 
+
+# ---------------------------------------------------------------------------
+# 폴러 루프
+# ---------------------------------------------------------------------------
 
 async def run_poller() -> None:
     redis_client = aioredis.from_url(settings.REDIS_URL)
@@ -129,15 +221,15 @@ async def run_poller() -> None:
     async with httpx.AsyncClient(timeout=10.0) as client:
         while True:
             try:
-                games = await _get_live_games(client)
+                games = await get_live_games(client)
                 if not games:
-                    logger.debug("No live games found")
+                    logger.debug("Live 경기 없음")
                 for game in games:
                     await _poll_game(game["gamePk"], client, redis_client)
             except asyncio.CancelledError:
                 break
             except Exception:
-                logger.exception("MLB poller error")
+                logger.exception("MLB poller 오류")
             await asyncio.sleep(interval)
 
     await redis_client.aclose()
