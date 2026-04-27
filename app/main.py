@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.ml.loader import load_all
-from app.routers import health, predict, ws
+from app.routers import games, health, predict, replay, ws
 from app.services.mlb_poller import run_poller
 
 logging.basicConfig(level=logging.INFO)
@@ -29,5 +29,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="SmartPitch API", version="0.1.0", lifespan=lifespan)
 
 app.include_router(health.router)
+app.include_router(games.router)
 app.include_router(predict.router)
+app.include_router(replay.router)
 app.include_router(ws.router)

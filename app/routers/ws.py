@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import redis.asyncio as aioredis
@@ -13,20 +14,28 @@ router = APIRouter(tags=["websocket"])
 @router.websocket("/ws/{game_pk}")
 async def websocket_game(websocket: WebSocket, game_pk: int):
     await websocket.accept()
+    logger.info("WS connected: game_pk=%d", game_pk)
 
     redis_client = aioredis.from_url(settings.REDIS_URL)
     pubsub = redis_client.pubsub()
     await pubsub.subscribe(f"game:{game_pk}")
-    logger.info("WS client connected: game_pk=%d", game_pk)
 
     try:
-        async for message in pubsub.listen():
-            if message["type"] == "message":
+        while True:
+            # 1초 안에 메시지 없으면 None 반환 → 루프 재진입
+            message = await pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=1.0
+            )
+            if message and message["type"] == "message":
                 data = message["data"]
                 text = data.decode() if isinstance(data, bytes) else data
                 await websocket.send_text(text)
+            else:
+                await asyncio.sleep(0.05)
     except WebSocketDisconnect:
-        logger.info("WS client disconnected: game_pk=%d", game_pk)
+        logger.info("WS disconnected: game_pk=%d", game_pk)
+    except Exception:
+        logger.exception("WS error: game_pk=%d", game_pk)
     finally:
         await pubsub.unsubscribe(f"game:{game_pk}")
         await redis_client.aclose()

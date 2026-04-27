@@ -24,6 +24,13 @@ PITCHER_MODEL_FILES: dict[str, str] = {
 # 13 zones: 1-9 (strike zone grid) + 11-14 (outer zones)
 ZONES: list[int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14]
 
+# MLB pitcher_id → pitcher_key 매핑
+PITCHER_ID_MAP: dict[int, str] = {
+    543243: "cole",   # Gerrit Cole
+    656302: "cease",  # Dylan Cease
+    668678: "gallen", # Zac Gallen
+}
+
 # Runtime state (populated by load_all)
 loaded_models: dict[str, DQN] = {}
 batter_clusters: dict[int, int] = {}
