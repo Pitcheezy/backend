@@ -17,7 +17,7 @@ import redis.asyncio as aioredis
 from app.config import settings
 from app.ml.inference import predict as ml_predict
 from app.ml.loader import loaded_models
-from app.schemas.pitch import GameStateMessage, PredictResponse
+from app.schemas.pitch import GameStateMessage, LastPitch, PredictResponse
 from app.services.mlb_poller import resolve_pitcher_key
 
 logger = logging.getLogger(__name__)
@@ -31,23 +31,45 @@ _replay_task: asyncio.Task | None = None
 # ---------------------------------------------------------------------------
 
 def _extract_pitches(all_plays: list[dict]) -> list[dict]:
-    """allPlays에서 투구 단위 상태 목록을 추출한다."""
+    """allPlays에서 투구 단위 상태 목록을 추출한다.
+
+    각 항목에 last_pitch(현재 투구 상세)와 pitch_sequence(타석 내 누적)를 포함.
+    """
     pitches: list[dict] = []
     on_1b = on_2b = on_3b = False
+    current_batter_id: int | None = None
+    current_at_bat_sequence: list[dict] = []
 
     for play in all_plays:
         matchup = play.get("matchup", {})
         about = play.get("about", {})
+        batter_id: int | None = matchup.get("batter", {}).get("id")
+
+        # 타자가 바뀌면 타석 시퀀스 초기화
+        if batter_id != current_batter_id:
+            current_batter_id = batter_id
+            current_at_bat_sequence = []
 
         for event in play.get("playEvents", []):
             if not event.get("isPitch"):
                 continue
 
             count = event.get("count", {})
+            details = event.get("details", {})
+            pitch_data = event.get("pitchData", {})
+
+            pitch_detail = {
+                "pitch_type": details.get("type", {}).get("description"),
+                "zone": pitch_data.get("zone"),
+                "velocity": pitch_data.get("startSpeed"),
+                "result": details.get("call", {}).get("description"),
+            }
+            current_at_bat_sequence.append(pitch_detail)
+
             pitches.append({
                 "inning": about.get("inning"),
-                "inning_half": about.get("halfInning"),
-                "batter_id": matchup.get("batter", {}).get("id"),
+                "half": about.get("halfInning"),
+                "batter_id": batter_id,
                 "batter_name": matchup.get("batter", {}).get("fullName"),
                 "pitcher_id": matchup.get("pitcher", {}).get("id"),
                 "pitcher_name": matchup.get("pitcher", {}).get("fullName"),
@@ -57,9 +79,11 @@ def _extract_pitches(all_plays: list[dict]) -> list[dict]:
                 "on_1b": on_1b,
                 "on_2b": on_2b,
                 "on_3b": on_3b,
+                "last_pitch": pitch_detail,
+                "pitch_sequence": list(current_at_bat_sequence),
             })
 
-        # 이 타석이 끝난 후 주자 상황 업데이트
+        # 타석 종료 후 주자 상황 업데이트
         on_1b = on_2b = on_3b = False
         for runner in play.get("runners", []):
             end = runner.get("movement", {}).get("end", "")
@@ -115,6 +139,7 @@ def _make_prediction(pitch: dict) -> PredictResponse | None:
             zone=result["zone"],
             action=result["action"],
             batter_cluster=result["batter_cluster"],
+            confidence=result.get("confidence"),
         )
     except Exception:
         logger.exception("replay 예측 실패")
@@ -134,10 +159,28 @@ async def _replay_loop(game_pk: int, interval: float) -> None:
 
     try:
         for i, pitch in enumerate(pitches):
+            lp_data = pitch.get("last_pitch", {})
+            last_pitch = LastPitch(
+                pitch_type=lp_data.get("pitch_type"),
+                zone=lp_data.get("zone"),
+                velocity=lp_data.get("velocity"),
+                result=lp_data.get("result"),
+            ) if lp_data else None
+
+            pitch_sequence = [
+                LastPitch(
+                    pitch_type=p.get("pitch_type"),
+                    zone=p.get("zone"),
+                    velocity=p.get("velocity"),
+                    result=p.get("result"),
+                )
+                for p in pitch.get("pitch_sequence", [])
+            ]
+
             state = GameStateMessage(
                 game_pk=game_pk,
                 inning=pitch["inning"],
-                inning_half=pitch["inning_half"],
+                half=pitch["half"],
                 batter_id=pitch["batter_id"],
                 batter_name=pitch["batter_name"],
                 pitcher_id=pitch["pitcher_id"],
@@ -148,9 +191,13 @@ async def _replay_loop(game_pk: int, interval: float) -> None:
                 on_1b=pitch["on_1b"],
                 on_2b=pitch["on_2b"],
                 on_3b=pitch["on_3b"],
+                last_pitch=last_pitch,
+                pitch_sequence=pitch_sequence,
                 prediction=_make_prediction(pitch),
             )
-            await redis_client.publish(channel, state.model_dump_json())
+            json_data = state.model_dump_json()
+            await redis_client.publish(channel, json_data)
+            await redis_client.set(f"game:snapshot:{game_pk}", json_data, ex=300)
             logger.debug("replay [%d/%d] 전송: %s", i + 1, len(pitches), pitch["pitcher_name"])
             await asyncio.sleep(interval)
 

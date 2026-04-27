@@ -17,6 +17,13 @@ async def websocket_game(websocket: WebSocket, game_pk: int):
     logger.info("WS connected: game_pk=%d", game_pk)
 
     redis_client = aioredis.from_url(settings.REDIS_URL)
+
+    # 연결 즉시 최신 상태 전송 (첫 폴링까지 빈 화면 방지)
+    snapshot = await redis_client.get(f"game:snapshot:{game_pk}")
+    if snapshot:
+        text = snapshot.decode() if isinstance(snapshot, bytes) else snapshot
+        await websocket.send_text(text)
+
     pubsub = redis_client.pubsub()
     await pubsub.subscribe(f"game:{game_pk}")
 

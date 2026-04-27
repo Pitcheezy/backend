@@ -34,17 +34,17 @@ FastAPI 백엔드
 ## 사전 준비
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) 설치
-- `SmartPitch_handoff/` 폴더가 이 레포와 **같은 레벨**에 위치해야 함
+- `SmartPitch_handoff/` 폴더가 이 레포 **내부**에 위치해야 함
 
 ```
-Pitcheezy/
-├── backend/              ← 이 레포
-└── SmartPitch_handoff/   ← 모델 파일 폴더
-    ├── dqn_cease_2024_2025.zip
-    ├── dqn_gallen_2024_2025.zip
-    ├── best_transition_model_universal.pth
-    └── data/
-        └── batter_clusters_2023.csv
+backend/                  ← 이 레포
+├── SmartPitch_handoff/   ← 모델 파일 폴더
+│   ├── dqn_cease_2024_2025.zip
+│   ├── dqn_gallen_2024_2025.zip
+│   ├── best_transition_model_universal.pth
+│   └── data/
+│       └── batter_clusters_2023.csv
+└── ...
 ```
 
 ---
@@ -102,6 +102,47 @@ curl http://localhost:8000/health/models
 
 전체 요청/응답 스키마는 [`docs/api-response.md`](docs/api-response.md)를 참고하세요.
 
+### WebSocket 메시지 구조 (`GameStateMessage`)
+
+```json
+{
+  "game_pk": 12345,
+  "inning": 3,
+  "half": "top",
+  "outs": 1,
+  "balls": 2,
+  "strikes": 1,
+  "on_1b": false,
+  "on_2b": true,
+  "on_3b": false,
+  "batter_id": 123,
+  "batter_name": "Juan Soto",
+  "pitcher_id": 456,
+  "pitcher_name": "Dylan Cease",
+  "last_pitch": {
+    "pitch_type": "4-Seam Fastball",
+    "zone": 5,
+    "velocity": 97.2,
+    "result": "Ball"
+  },
+  "pitch_sequence": [
+    { "pitch_type": "Slider", "zone": 14, "velocity": 88.1, "result": "Swinging Strike" },
+    { "pitch_type": "4-Seam Fastball", "zone": 5, "velocity": 97.2, "result": "Ball" }
+  ],
+  "prediction": {
+    "pitch_type": "Slider",
+    "zone": 14,
+    "action": 183,
+    "batter_cluster": 2,
+    "confidence": 0.82
+  }
+}
+```
+
+- `pitch_sequence`: 현재 타석의 전체 투구 이력 (오래된 순)
+- `last_pitch`: `pitch_sequence`의 마지막 요소와 동일
+- WebSocket 연결 직후 Redis 캐시에서 최신 상태를 즉시 전송 (빈 화면 방지)
+
 ---
 
 ## ML 모델
@@ -115,6 +156,19 @@ curl http://localhost:8000/health/models
 - **입력:** `[balls, strikes, outs, on_1b, on_2b, on_3b, batter_cluster, pitcher_cluster]` (8차원)
 - **출력:** `action → pitch_type (action // 13)`, `zone (action % 13)`
 - Cole 모델은 W&B Artifact에서 별도 다운로드 필요 (`README.txt` 참고)
+
+---
+
+## CORS 허용 출처
+
+개발 환경에서 아래 출처의 요청을 허용합니다.
+
+| 출처 | 용도 |
+|------|------|
+| `http://localhost:5173` | Vite 개발 서버 |
+| `http://localhost:3000` | Next.js / CRA 개발 서버 |
+
+프로덕션 배포 시 `main.py`의 `allow_origins` 목록을 실제 도메인으로 교체하세요.
 
 ---
 

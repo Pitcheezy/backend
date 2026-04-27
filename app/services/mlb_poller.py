@@ -64,19 +64,21 @@ def _parse_inning_line(innings: list[dict]) -> InningLine:
     return InningLine(away=away, home=home)
 
 
-def _parse_last_pitch(play_events: list[dict]) -> LastPitch | None:
-    pitch_events = [e for e in play_events if e.get("isPitch")]
-    if not pitch_events:
-        return None
-    last = pitch_events[-1]
-    details = last.get("details", {})
-    pitch_data = last.get("pitchData", {})
-    return LastPitch(
-        pitch_type=details.get("type", {}).get("description"),
-        zone=pitch_data.get("zone"),
-        velocity=pitch_data.get("startSpeed"),
-        result=details.get("call", {}).get("description"),
-    )
+def _parse_pitch_sequence(play_events: list[dict]) -> list[LastPitch]:
+    """현재 타석의 전체 투구 시퀀스를 오래된 순서로 반환."""
+    result = []
+    for event in play_events:
+        if not event.get("isPitch"):
+            continue
+        details = event.get("details", {})
+        pitch_data = event.get("pitchData", {})
+        result.append(LastPitch(
+            pitch_type=details.get("type", {}).get("description"),
+            zone=pitch_data.get("zone"),
+            velocity=pitch_data.get("startSpeed"),
+            result=details.get("call", {}).get("description"),
+        ))
+    return result
 
 
 def _make_prediction(
@@ -183,6 +185,9 @@ async def _poll_game(
     if gd_teams.get("home"):
         home_team = _parse_team(gd_teams["home"])
 
+    play_events = current_play.get("playEvents", [])
+    pitch_sequence = _parse_pitch_sequence(play_events)
+
     state = GameStateMessage(
         game_pk=game_pk,
         inning=about.get("inning"),
@@ -203,11 +208,15 @@ async def _poll_game(
         on_1b=on_1b,
         on_2b=on_2b,
         on_3b=on_3b,
-        last_pitch=_parse_last_pitch(current_play.get("playEvents", [])),
+        last_pitch=pitch_sequence[-1] if pitch_sequence else None,
+        pitch_sequence=pitch_sequence,
         prediction=prediction,
     )
 
-    await redis_client.publish(f"game:{game_pk}", state.model_dump_json())
+    json_data = state.model_dump_json()
+    await redis_client.publish(f"game:{game_pk}", json_data)
+    # 최신 상태를 캐싱해 두어 신규 WS 연결 시 즉시 전송
+    await redis_client.set(f"game:snapshot:{game_pk}", json_data, ex=300)
 
 
 # ---------------------------------------------------------------------------

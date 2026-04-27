@@ -7,7 +7,7 @@ services:
     volumes:
       - .:/app
       - /app/.venv
-      - ../SmartPitch_handoff:/app/app/ml/models:ro
+      - ./SmartPitch_handoff:/app/app/ml/models:ro
     env_file:
       - .env
     depends_on:

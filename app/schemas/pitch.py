@@ -105,6 +105,9 @@ class GameStateMessage(BaseModel):
     # 직전 투구
     last_pitch: Optional[LastPitch] = None
 
+    # 현재 타석 전체 투구 시퀀스 (oldest first)
+    pitch_sequence: list[LastPitch] = []
+
     # ML 예측
     prediction: Optional[PredictResponse] = None
 
