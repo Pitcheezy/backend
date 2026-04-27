@@ -47,14 +47,17 @@ def predict(
     pitch_type = pitch_names[pitch_idx] if pitch_idx < len(pitch_names) else "Unknown"
     zone = ZONES[zone_idx] if zone_idx < len(ZONES) else 0
 
-    # Q-value softmax → confidence
+    # Q-value 기반 신뢰도: 선택 액션 확률 / 상위 3개 확률 합
+    # (전체 액션 softmax 대비 비율 대신 상위 후보 내 상대 신뢰도로 표현)
     confidence: float | None = None
     try:
         obs_th, _ = model.policy.obs_to_tensor(obs[np.newaxis, :])
         with torch.no_grad():
             q_values = model.policy.q_net(obs_th)
             probs = torch.softmax(q_values, dim=-1)
-            confidence = round(float(probs[0, action].item()), 4)
+            chosen_prob = float(probs[0, action].item())
+            top3_sum = float(probs[0].topk(3).values.sum().item())
+            confidence = round(chosen_prob / top3_sum if top3_sum > 0 else 0.0, 4)
     except Exception:
         logger.debug("confidence 계산 실패", exc_info=True)
 

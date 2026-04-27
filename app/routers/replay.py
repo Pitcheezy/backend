@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.schemas.common import ok
 from app.services import replay as replay_service
 
 router = APIRouter(prefix="/api/replay", tags=["replay"])
@@ -42,5 +43,8 @@ async def stop_replay():
 
 @router.get("/status")
 async def replay_status():
-    """replay 실행 여부를 반환합니다."""
-    return {"running": replay_service.is_running()}
+    """replay 실행 여부와 현재 game_pk를 반환합니다."""
+    return ok({
+        "running": replay_service.is_running(),
+        "game_pk": replay_service.current_game_pk(),
+    })

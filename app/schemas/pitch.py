@@ -70,6 +70,46 @@ class PredictResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 라이브 플레이어 통계 (WebSocket 브로드캐스트 포함)
+# ---------------------------------------------------------------------------
+
+class PitchMixEntry(BaseModel):
+    pitch_type: str
+    count: int
+    share: float           # 0..1
+    avg_velocity: Optional[float] = None  # mph
+
+
+class InningPitchCount(BaseModel):
+    inning: int
+    count: int
+
+
+class PitcherLiveStats(BaseModel):
+    # 시즌 스탯 (MLB Stats API)
+    era: Optional[float] = None
+    whip: Optional[float] = None
+    k9: Optional[float] = None
+    ip_season: Optional[float] = None
+    # 게임 내 누적 스탯 (리플레이 실시간 계산)
+    pitches_today: int = 0
+    pitch_mix: list[PitchMixEntry] = []
+    velocity_trend: list[float] = []      # 최근 30구 구속(mph)
+    current_velocity: Optional[float] = None
+    peak_velocity: Optional[float] = None
+    inning_pitches: list[InningPitchCount] = []
+    change_index: float = 0.0             # 0..100 (교체 긴급도)
+
+
+class HitterLiveStats(BaseModel):
+    # 시즌 스탯 (MLB Stats API)
+    avg: Optional[float] = None
+    ops: Optional[float] = None
+    hr: Optional[int] = None
+    rbi: Optional[int] = None
+
+
+# ---------------------------------------------------------------------------
 # WebSocket 브로드캐스트 메시지
 # ---------------------------------------------------------------------------
 
@@ -110,6 +150,10 @@ class GameStateMessage(BaseModel):
 
     # ML 예측
     prediction: Optional[PredictResponse] = None
+
+    # 라이브 플레이어 스탯
+    pitcher_stats: Optional[PitcherLiveStats] = None
+    batter_stats: Optional[HitterLiveStats] = None
 
 
 # ---------------------------------------------------------------------------
